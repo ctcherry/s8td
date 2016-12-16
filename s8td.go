@@ -18,7 +18,6 @@ import (
 )
 
 var port int
-var reloadTemplates bool
 var uploadRoot string
 var key string
 
@@ -39,7 +38,11 @@ func main() {
 	fmt.Printf("Upload root is %s\n", uploadRoot)
 
 	portString := fmt.Sprintf(":%d", port)
-	http.ListenAndServe(portString, nil)
+	err := http.ListenAndServe(portString, nil)
+	if err != nil {
+		fmt.Printf("Unable to start HTTP server: %s", err)
+		os.Exit(1)
+	}
 }
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
@@ -54,7 +57,10 @@ func randString(n int) string {
 
 func checkSig(data, sig, key []byte) bool {
 	mac := hmac.New(sha1.New, key)
-	mac.Write(data)
+	_, err := mac.Write(data)
+	if err != nil {
+		return false
+	}
 	expectedMAC := mac.Sum(nil)
 	return hmac.Equal(sig, expectedMAC)
 }
@@ -74,7 +80,13 @@ func getHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", 404)
 		return
 	}
-	defer file.Close()
+
+	defer func() {
+		closeErr := file.Close()
+		if closeErr != nil {
+			fmt.Printf("Unable to close file %s", closeErr)
+		}
+	}()
 
 	_, err = io.Copy(w, file)
 
@@ -125,7 +137,12 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer uploadedFile.Close()
+	defer func() {
+		upldErr := uploadedFile.Close()
+		if upldErr != nil {
+			fmt.Printf("Unable to close uploaded file %s", upldErr)
+		}
+	}()
 
 	id := randString(8)
 	filePath := path.Join(uploadRoot, id)
@@ -136,7 +153,12 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer out.Close()
+	defer func() {
+		outErr := out.Close()
+		if outErr != nil {
+			fmt.Printf("Unable to close save destination for uplaoded file %s", outErr)
+		}
+	}()
 
 	// write the content from POST to the file
 	_, err = io.Copy(out, uploadedFile)
