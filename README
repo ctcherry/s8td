@@ -1,0 +1,9 @@
+s8td
+----
+
+Screenshot Daemon
+
+Allows for the upload and serving of screenshot images over HTTP.
+
+Intended as a replacemnt for similar pay-for services.
+
