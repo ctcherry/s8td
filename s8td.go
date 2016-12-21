@@ -1,13 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -19,17 +19,20 @@ import (
 
 var port int
 var uploadRoot string
-var key string
+var keyFile string
+var keys map[string][]byte
 
 func init() {
 	flag.IntVar(&port, "port", 8080, "http listen port")
 	flag.StringVar(&uploadRoot, "uploadRoot", "/tmp", "root path for uploads")
-	flag.StringVar(&key, "key", "", "key for signing upload requests")
+	flag.StringVar(&keyFile, "keyFile", "", "Path to file with id:key pairs")
 }
 
 func main() {
 	flag.Parse()
 	rand.Seed(time.Now().UnixNano())
+
+	loadKeys()
 
 	http.HandleFunc("/upload", uploadHandler)
 	http.HandleFunc("/", getHandler)
@@ -45,6 +48,43 @@ func main() {
 	}
 }
 
+func loadKeys() {
+
+	file, err := os.Open(keyFile)
+	if err != nil {
+		fmt.Print("Unable to load keys, file missing")
+		os.Exit(2)
+	}
+
+	tmp := map[string][]byte{}
+
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		parts := strings.Split(":", scanner.Text())
+		if len(parts) != 2 {
+			fmt.Print("Unable to load keys, bad file format")
+			os.Exit(2)
+		}
+		tmp[parts[0]] = []byte(parts[1])
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Print("Unable to load keys, err reading file: ", err)
+	}
+
+	keys = tmp
+}
+
+func lookupKey(id string) ([]byte, error) {
+	k, ok := keys[id]
+	if !ok {
+		return nil, fmt.Errorf("ID: '%s' not found", id)
+	}
+
+	return k, nil
+}
+
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 func randString(n int) string {
@@ -55,9 +95,9 @@ func randString(n int) string {
 	return string(b)
 }
 
-func checkSig(data, sig, key []byte) bool {
+func checkSig(data string, sig []byte, key []byte) bool {
 	mac := hmac.New(sha1.New, key)
-	_, err := mac.Write(data)
+	_, err := io.WriteString(mac, data)
 	if err != nil {
 		return false
 	}
@@ -99,10 +139,11 @@ func getHandler(w http.ResponseWriter, r *http.Request) {
 
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 
+	id := r.FormValue("id")
 	tsStr := r.FormValue("ts")
 	sigStr := r.FormValue("sig")
 
-	fmt.Printf("ts: %s sig: %s\n", tsStr, sigStr)
+	fmt.Printf("id: %s ts: %s sig: %s\n", id, tsStr, sigStr)
 
 	sig, err := hex.DecodeString(sigStr)
 	if err != nil {
@@ -110,19 +151,25 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ts, err := strconv.Atoi(tsStr)
+	ts, err := strconv.ParseInt(tsStr, 10, 0)
 	if err != nil {
 		http.Error(w, "ts might not be a number?", 400)
 		return
 	}
 
-	if math.Abs(float64(time.Now().Unix()-int64(ts))) > 30 {
+	key, err := lookupKey(id)
+	if err != nil {
+		http.Error(w, "Err: id not found", 400)
+		return
+	}
+
+	if !validateTimestamp(ts) {
 		fmt.Println("Err: Request too old")
 		http.Error(w, "Request too old", 400)
 		return
 	}
 
-	if !checkSig([]byte(tsStr), sig, []byte(key)) {
+	if !checkSig(tsStr, sig, key) {
 		fmt.Println("Err: sig no match")
 		http.Error(w, "Sig no match", 400)
 		return
@@ -144,8 +191,8 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	id := randString(8)
-	filePath := path.Join(uploadRoot, id)
+	fid := randString(8)
+	filePath := path.Join(uploadRoot, fid)
 
 	out, err := os.Create(filePath)
 	if err != nil {
@@ -166,6 +213,29 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, err)
 	}
 
-	url := fmt.Sprintf("http://%s/%s", r.Host, id)
+	url := fmt.Sprintf("http://%s/%s", r.Host, fid)
 	fmt.Fprintf(w, url)
+}
+
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	if x == 0 {
+		return 0
+	}
+	return x
+}
+
+func validateTimestamp(checkTs int64) bool {
+	t := time.Now().Unix()
+	tolerance := int64(30)
+
+	d := abs(t - checkTs)
+
+	if d > tolerance {
+		return false
+	} else {
+		return true
+	}
 }
